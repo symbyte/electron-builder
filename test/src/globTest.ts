@@ -1,121 +1,55 @@
-import test from "./helpers/avaEx"
-import { expectedWinContents } from "./helpers/expectedContents"
-import { outputFile, symlink } from "fs-extra-p"
-import { assertPack, modifyPackageJson, getPossiblePlatforms, app, appThrows } from "./helpers/packTester"
-import { Promise as BluebirdPromise } from "bluebird"
+import BluebirdPromise from "bluebird-lst"
+import { DIR_TARGET, Platform } from "electron-builder"
+import { readAsar } from "electron-builder/out/asar/asar"
+import { mkdirs, outputFile, readFile, symlink, writeFile } from "fs-extra-p"
 import * as path from "path"
 import { assertThat } from "./helpers/fileAssert"
-import { Platform, DIR_TARGET } from "out"
-import pathSorter = require("path-sort")
-import { statFile } from "asar-electron-builder"
+import { app, assertPack, modifyPackageJson, PackedContext } from "./helpers/packTester"
 
-//noinspection JSUnusedLocalSymbols
-const __awaiter = require("out/util/awaiter")
+async function createFiles(appDir: string) {
+  await BluebirdPromise.all([
+    outputFile(path.join(appDir, "assets", "file"), "data"),
+    outputFile(path.join(appDir, "b2", "file"), "data"),
+    outputFile(path.join(appDir, "do-not-unpack-dir", "file.json"), "{}")
+      .then(() => writeFile(path.join(appDir, "do-not-unpack-dir", "must-be-not-unpacked"), "{}"))
+  ])
 
-test.ifDevOrLinuxCi("ignore build resources", app({
-  targets: Platform.LINUX.createTarget(DIR_TARGET),
-  devMetadata: {
-    build: {
-      asar: false
-    }
-  }
-}, {
-  projectDirCreated: projectDir => {
-    return outputFile(path.join(projectDir, "one/build/foo.txt"), "data")
-  },
-  packed: context => {
-    return assertThat(path.join(context.getResources(Platform.LINUX), "app", "one", "build", "foo.txt")).isFile()
-  },
-}))
-
-test.ifDevOrLinuxCi("ignore known ignored files", app({
-  targets: Platform.LINUX.createTarget(DIR_TARGET),
-  devMetadata: {
-    build: {
-      asar: false
-    }
-  }
-}, {
-  projectDirCreated: projectDir => BluebirdPromise.all([
-    outputFile(path.join(projectDir, ".svn", "foo"), "data"),
-    outputFile(path.join(projectDir, ".git", "foo"), "data"),
-    outputFile(path.join(projectDir, "foo", "bar", "f.o"), "data"),
-    outputFile(path.join(projectDir, "node_modules", ".bin", "f.txt"), "data"),
-    outputFile(path.join(projectDir, "node_modules", ".bin2", "f.txt"), "data"),
-  ]),
-  packed: async context => {
-    await assertThat(path.join(context.getResources(Platform.LINUX), "app", ".svn")).doesNotExist()
-    await assertThat(path.join(context.getResources(Platform.LINUX), "app", ".git")).doesNotExist()
-    await assertThat(path.join(context.getResources(Platform.LINUX), "app", "foo", "bar", "f.o")).doesNotExist()
-    await assertThat(path.join(context.getResources(Platform.LINUX), "app", "node_modules", ".bin")).doesNotExist()
-    await assertThat(path.join(context.getResources(Platform.LINUX), "app", "node_modules", ".bin2")).isDirectory()
-  },
-}))
-
-test.ifDevOrLinuxCi("files", app({
-  targets: Platform.LINUX.createTarget(DIR_TARGET),
-  devMetadata: {
-    build: {
-      asar: false,
-      files: ["**/*", "!ignoreMe${/*}"]
-    }
-  }
-}, {
-  projectDirCreated: projectDir => {
-    return outputFile(path.join(projectDir, "ignoreMe", "foo"), "data")
-  },
-  packed: context => {
-    return assertThat(path.join(context.getResources(Platform.LINUX), "app", "ignoreMe")).doesNotExist()
-  },
-}))
+  const dir = path.join(appDir, "do-not-unpack-dir", "dir-2", "dir-3", "dir-3")
+  await mkdirs(dir)
+  await writeFile(path.join(dir, "file-in-asar"), "{}")
+}
 
 test.ifDevOrLinuxCi("unpackDir one", app({
   targets: Platform.LINUX.createTarget(DIR_TARGET),
-  devMetadata: {
-    build: {
-      asar: {
-        unpackDir: "{assets,b2}"
-      },
-    }
+  config: {
+    asarUnpack: ["assets", "b2", "do-not-unpack-dir/file.json"],
   }
 }, {
-  projectDirCreated: projectDir => {
-    return BluebirdPromise.all([
-      outputFile(path.join(projectDir, "assets", "file"), "data"),
-      outputFile(path.join(projectDir, "b2", "file"), "data"),
-    ])
-  },
-  packed: context => {
-    return BluebirdPromise.all([
-      assertThat(path.join(context.getResources(Platform.LINUX), "app.asar.unpacked", "assets")).isDirectory(),
-      assertThat(path.join(context.getResources(Platform.LINUX), "app.asar.unpacked", "b2")).isDirectory(),
-    ])
-  },
+  projectDirCreated: createFiles,
+  packed: assertDirs,
 }))
 
+async function assertDirs(context: PackedContext) {
+  const resourceDir = context.getResources(Platform.LINUX)
+  await BluebirdPromise.all([
+    assertThat(path.join(resourceDir, "app.asar.unpacked", "assets")).isDirectory(),
+    assertThat(path.join(resourceDir, "app.asar.unpacked", "b2")).isDirectory(),
+    assertThat(path.join(resourceDir, "app.asar.unpacked", "do-not-unpack-dir", "file.json")).isFile(),
+    assertThat(path.join(resourceDir, "app.asar.unpacked", "do-not-unpack-dir", "must-be-not-unpacked")).doesNotExist(),
+    assertThat(path.join(resourceDir, "app.asar.unpacked", "do-not-unpack-dir", "dir-2")).doesNotExist(),
+  ])
+
+  expect((await readFile(path.join(resourceDir, "app.asar"))).toString("base64")).toMatchSnapshot()
+}
 test.ifDevOrLinuxCi("unpackDir", () => {
   return assertPack("test-app", {
     targets: Platform.LINUX.createTarget(DIR_TARGET),
-    devMetadata: {
-      build: {
-        asar: {
-          unpackDir: "{assets,b2}"
-        },
-      }
+    config: {
+      asarUnpack: ["assets", "b2", "do-not-unpack-dir/file.json"],
     }
   }, {
-    projectDirCreated: projectDir => {
-      return BluebirdPromise.all([
-        outputFile(path.join(projectDir, "app", "assets", "file"), "data"),
-        outputFile(path.join(projectDir, "app", "b2", "file"), "data"),
-      ])
-    },
-    packed: context => {
-      return BluebirdPromise.all([
-        assertThat(path.join(context.getResources(Platform.LINUX), "app.asar.unpacked", "assets")).isDirectory(),
-        assertThat(path.join(context.getResources(Platform.LINUX), "app.asar.unpacked", "b2")).isDirectory(),
-      ])
-    },
+    projectDirCreated: projectDir => createFiles(path.join(projectDir, "app")),
+    packed: assertDirs,
   })
 })
 
@@ -126,219 +60,59 @@ test.ifNotWindows("link", app({
     return symlink(path.join(projectDir, "index.js"), path.join(projectDir, "foo.js"))
   },
   packed: async context => {
-    assertThat(statFile(path.join(context.getResources(Platform.LINUX), "app.asar"), "foo.js", false)).hasProperties({
-      link: "index.js",
-    })
+    expect((await readAsar(path.join(context.getResources(Platform.LINUX), "app.asar"))).getFile("foo.js", false)).toMatchSnapshot()
   },
 }))
 
-// skip on MacOS because we want test only / and \
-test.ifNotCiOsx("ignore node_modules known dev dep", () => {
-  const build: any = {
-    asar: false,
-    ignore: (file: string) => {
-      return file === "/ignoreMe"
-    }
-  }
-
-  return assertPack("test-app-one", {
-    targets: Platform.LINUX.createTarget(DIR_TARGET),
-    devMetadata: {
-      build: build
-    }
-  }, {
-    projectDirCreated: projectDir => {
-      return BluebirdPromise.all([
-        modifyPackageJson(projectDir, data => {
-          data.devDependencies = Object.assign({
-              "electron-osx-sign-tf": "*",
-            }, data.devDependencies)
-        }),
-        outputFile(path.join(projectDir, "node_modules", "electron-osx-sign-tf", "package.json"), "{}"),
-        outputFile(path.join(projectDir, "ignoreMe"), ""),
-      ])
-    },
-    packed: context => {
-      return BluebirdPromise.all([
-        assertThat(path.join(context.getResources(Platform.LINUX), "app", "node_modules", "electron-osx-sign-tf")).doesNotExist(),
-        assertThat(path.join(context.getResources(Platform.LINUX), "app", "ignoreMe")).doesNotExist(),
-      ])
-    },
-  })
-})
+test.ifNotWindows("outside link", app({
+  targets: Platform.LINUX.createTarget(DIR_TARGET),
+}, {
+  projectDirCreated: async (projectDir, tmpDir) => {
+    const tempDir = await tmpDir.getTempDir()
+    await outputFile(path.join(tempDir, "foo"), "data")
+    await symlink(tempDir, path.join(projectDir, "o-dir"))
+  },
+  packed: async context => {
+    expect((await readAsar(path.join(context.getResources(Platform.LINUX), "app.asar"))).getFile("o-dir/foo", false)).toMatchSnapshot()
+  },
+}))
 
 // https://github.com/electron-userland/electron-builder/issues/611
 test.ifDevOrLinuxCi("failed peer dep", () => {
   return assertPack("test-app-one", {
     targets: Platform.LINUX.createTarget(DIR_TARGET),
   }, {
-    npmInstallBefore: true,
+    installDepsBefore: true,
     projectDirCreated: projectDir => modifyPackageJson(projectDir, data => {
       //noinspection SpellCheckingInspection
       data.dependencies = {
         "rc-datepicker": "4.0.0",
-        "react": "15.2.1",
+        react: "15.2.1",
         "react-dom": "15.2.1"
       }
     }),
   })
 })
 
-test("extraResources", async () => {
-  for (let platform of getPossiblePlatforms().keys()) {
-    const osName = platform.buildConfigurationKey
-
-    const winDirPrefix = "lib/net45/resources/"
-
-    //noinspection SpellCheckingInspection
-    await assertPack("test-app", {
-      // to check NuGet package
-      targets: platform.createTarget(platform === Platform.WINDOWS ? null : DIR_TARGET),
-    }, {
-      projectDirCreated: projectDir => {
-        return BluebirdPromise.all([
-          modifyPackageJson(projectDir, data => {
-            data.build.extraResources = [
-              "foo",
-              "bar/hello.txt",
-              "bar/${arch}.txt",
-              "${os}/${arch}.txt",
-            ]
-
-            data.build[osName] = {
-              extraResources: [
-                "platformSpecificR"
-              ],
-              extraFiles: [
-                "platformSpecificF"
-              ],
-            }
-          }),
-          outputFile(path.join(projectDir, "foo/nameWithoutDot"), "nameWithoutDot"),
-          outputFile(path.join(projectDir, "bar/hello.txt"), "data"),
-          outputFile(path.join(projectDir, `bar/${process.arch}.txt`), "data"),
-          outputFile(path.join(projectDir, `${osName}/${process.arch}.txt`), "data"),
-          outputFile(path.join(projectDir, "platformSpecificR"), "platformSpecificR"),
-          outputFile(path.join(projectDir, "ignoreMe.txt"), "ignoreMe"),
-        ])
-      },
-      packed: async context => {
-        const base = path.join(context.outDir, platform.buildConfigurationKey + `${platform === Platform.MAC ? "" : "-unpacked"}`)
-        let resourcesDir = path.join(base, "resources")
-        if (platform === Platform.MAC) {
-          resourcesDir = path.join(base, "TestApp.app", "Contents", "Resources")
-        }
-        await assertThat(path.join(resourcesDir, "foo")).isDirectory()
-        await assertThat(path.join(resourcesDir, "foo", "nameWithoutDot")).isFile()
-        await assertThat(path.join(resourcesDir, "bar", "hello.txt")).isFile()
-        await assertThat(path.join(resourcesDir, "bar", `${process.arch}.txt`)).isFile()
-        await assertThat(path.join(resourcesDir, osName, `${process.arch}.txt`)).isFile()
-        await assertThat(path.join(resourcesDir, "platformSpecificR")).isFile()
-        await assertThat(path.join(resourcesDir, "ignoreMe.txt")).doesNotExist()
-      },
-      expectedContents: platform === Platform.WINDOWS ? pathSorter(expectedWinContents.concat(
-        winDirPrefix + "bar/hello.txt",
-        winDirPrefix + "bar/x64.txt",
-        winDirPrefix + "foo/nameWithoutDot",
-        winDirPrefix + "platformSpecificR",
-        winDirPrefix + "win/x64.txt"
-      )) : null,
-    })
-  }
-})
-
-test("extraResources - one-package", async () => {
-  for (let platform of [process.platform === "win32" ? Platform.WINDOWS : Platform.LINUX]) {
-    const osName = platform.buildConfigurationKey
-
-    const winDirPrefix = "lib/net45/resources/"
-
-    //noinspection SpellCheckingInspection
-    await assertPack("test-app-one", {
-      // to check NuGet package
-      targets: platform.createTarget(platform === Platform.WINDOWS ? null : DIR_TARGET),
-      devMetadata: {
-        build: {
-          asar: true,
-        },
-      },
-    }, {
-      projectDirCreated: projectDir => {
-        return BluebirdPromise.all([
-          modifyPackageJson(projectDir, data => {
-            data.build.extraResources = [
-              "foo",
-              "bar/hello.txt",
-              "bar/${arch}.txt",
-              "${os}/${arch}.txt",
-            ]
-
-            data.build[osName] = {
-              extraResources: [
-                "platformSpecificR"
-              ],
-              extraFiles: [
-                "platformSpecificF"
-              ],
-            }
-          }),
-          outputFile(path.join(projectDir, "foo/nameWithoutDot"), "nameWithoutDot"),
-          outputFile(path.join(projectDir, "bar/hello.txt"), "data"),
-          outputFile(path.join(projectDir, `bar/${process.arch}.txt`), "data"),
-          outputFile(path.join(projectDir, `${osName}/${process.arch}.txt`), "data"),
-          outputFile(path.join(projectDir, "platformSpecificR"), "platformSpecificR"),
-          outputFile(path.join(projectDir, "ignoreMe.txt"), "ignoreMe"),
-        ])
-      },
-      packed: async context => {
-        const base = path.join(context.outDir, platform.buildConfigurationKey + `${platform === Platform.MAC ? "" : "-unpacked"}`)
-        let resourcesDir = path.join(base, "resources")
-        if (platform === Platform.MAC) {
-          resourcesDir = path.join(base, "TestApp.app", "Contents", "Resources")
-        }
-        const appDir = path.join(resourcesDir, "app")
-
-        await assertThat(path.join(resourcesDir, "foo")).isDirectory()
-        await assertThat(path.join(appDir, "foo")).doesNotExist()
-
-        await assertThat(path.join(resourcesDir, "foo", "nameWithoutDot")).isFile()
-        await assertThat(path.join(appDir, "foo", "nameWithoutDot")).doesNotExist()
-
-        await assertThat(path.join(resourcesDir, "bar", "hello.txt")).isFile()
-        await assertThat(path.join(resourcesDir, "bar", `${process.arch}.txt`)).isFile()
-        await assertThat(path.join(appDir, "bar", `${process.arch}.txt`)).doesNotExist()
-
-        await assertThat(path.join(resourcesDir, osName, `${process.arch}.txt`)).isFile()
-        await assertThat(path.join(resourcesDir, "platformSpecificR")).isFile()
-        await assertThat(path.join(resourcesDir, "ignoreMe.txt")).doesNotExist()
-      },
-      expectedContents: platform === Platform.WINDOWS ? pathSorter(expectedWinContents.concat(
-        winDirPrefix + "bar/hello.txt",
-        winDirPrefix + "bar/x64.txt",
-        winDirPrefix + "foo/nameWithoutDot",
-        winDirPrefix + "platformSpecificR",
-        winDirPrefix + "win/x64.txt"
-      )) : null,
-    })
-  }
-})
-
-test.ifDevOrLinuxCi("copy only js files - no asar", appThrows(/Application "package.json" does not exist/, {
-  targets: Platform.LINUX.createTarget(DIR_TARGET),
-  devMetadata: {
-    build: {
-      "files": ["**/*.js"],
+test.ifAll.ifDevOrLinuxCi("ignore node_modules", () => {
+  return assertPack("test-app-one", {
+    targets: Platform.LINUX.createTarget(DIR_TARGET),
+    config: {
       asar: false,
+      files: [
+        "!node_modules/**/*"
+      ]
     }
-  }
-}))
-
-test.ifDevOrLinuxCi("copy only js files - asar", appThrows(/Application "package.json" in the /, {
-  targets: Platform.LINUX.createTarget(DIR_TARGET),
-  devMetadata: {
-    build: {
-      "files": ["**/*.js"],
-      asar: true,
+  }, {
+    installDepsBefore: true,
+    projectDirCreated: projectDir => modifyPackageJson(projectDir, data => {
+      //noinspection SpellCheckingInspection
+      data.dependencies = {
+        "is-ci": "*",
+      }
+    }),
+    packed: context => {
+      return assertThat(path.join(context.getResources(Platform.LINUX), "app", "node_modules")).doesNotExist()
     }
-  }
-}))
+  })
+})

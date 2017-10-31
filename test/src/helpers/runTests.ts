@@ -1,212 +1,164 @@
-import { spawn } from "child_process"
+import BluebirdPromise from "bluebird-lst"
+import { createHash } from "crypto"
+import { emptyDir, readJson, remove } from "fs-extra-p"
+import isCi from "is-ci"
+import { tmpdir } from "os"
 import * as path from "path"
-import { Promise as BluebirdPromise } from "bluebird"
-import { copy, emptyDir, outputFile, readdir, readFileSync, readJson, unlink, remove } from "fs-extra-p"
-import { Platform } from "out/metadata"
-import { cpus, homedir, tmpdir } from "os"
-import { TEST_DIR, ELECTRON_VERSION } from "./config"
+import { deleteOldElectronVersion, downloadAllRequiredElectronVersions } from "./downloadElectron"
 
-// we set NODE_PATH in this file, so, we cannot use 'out/awaiter' path here
-//noinspection JSUnusedLocalSymbols
-const __awaiter = require("../../../out/util/awaiter")
+const rootDir = path.join(__dirname, "../../..")
 
-const util = require("../../../out/util/util")
-const utilSpawn = util.spawn
+// we set NODE_PATH in this file, so, we cannot use 'out/util' path here
+const util = require(`${rootDir}/packages/builder-util/out/util`)
 const isEmptyOrSpaces = util.isEmptyOrSpaces
 
-const downloadElectron: (options: any) => Promise<any> = BluebirdPromise.promisify(require("electron-download"))
-const packager = require("../../../out/packager")
+const baseDir = process.env.ELECTRON_BUILDER_TEST_DIR || (process.platform === "darwin" && !require("is-ci") ? "/tmp" : tmpdir())
+const TEST_TMP_DIR = path.join(baseDir, `et-${createHash("md5").update(__dirname).digest("hex")}`)
 
-const rootDir = path.join(__dirname, "..", "..", "..")
-const testPackageDir = path.join(tmpdir(), "electron_builder_published")
-const testNodeModules = path.join(testPackageDir, "node_modules")
-
-async function main() {
-  await BluebirdPromise.all([
-    deleteOldElectronVersion(),
-    downloadAllRequiredElectronVersions(),
-    emptyDir(TEST_DIR),
-    outputFile(path.join(testPackageDir, "package.json"), `{
-      "private": true,
-      "version": "1.0.0",
-      "name": "test",
-      "dependencies": {
-        "electron-builder": "file:${path.posix.join(__dirname.replace(/\\/g, "/"), "..", "..")}"
-      }
-    }`)
-      .then(() => copyDependencies())
-  ])
-
-  // install from cache - all dependencies are already installed before run test
-  // https://github.com/npm/npm/issues/2568
-  await exec(["install", "--cache-min", "999999999", "--production", rootDir])
-  // prune stale packages
-  await exec(["prune", "--production"])
-  try {
-    await runTests()
-  }
-  finally {
-    await remove(TEST_DIR)
-  }
-}
-
-main()
+runTests()
   .catch(error => {
     console.error(error.stack || error)
     process.exit(1)
   })
 
-async function deleteOldElectronVersion(): Promise<any> {
-  if (!process.env.CI) {
-    return
+async function runTests() {
+  if (process.env.CIRCLECI) {
+    await emptyDir(TEST_TMP_DIR)
+  }
+  else {
+    await BluebirdPromise.all([
+      deleteOldElectronVersion(),
+      downloadAllRequiredElectronVersions(),
+      emptyDir(TEST_TMP_DIR),
+    ])
   }
 
-  const cacheDir = path.join(homedir(), ".electron")
-  try {
-    const deletePromises: Array<Promise<any>> = []
-    for (let file of (await readdir(cacheDir))) {
-      if (file.endsWith(".zip") && !file.includes(ELECTRON_VERSION)) {
-        console.log(`Remove old electron ${file}`)
-        deletePromises.push(unlink(path.join(cacheDir, file)))
-      }
-    }
-    return await BluebirdPromise.all(deletePromises)
-  }
-  catch (e) {
-    if (e.code === "ENOENT") {
-      return []
-    }
-    else {
-      throw e
-    }
-  }
-}
+  const testFiles: string | null | undefined = process.env.TEST_FILES
 
-function downloadAllRequiredElectronVersions(): Promise<any> {
-  const downloadPromises: Array<Promise<any>> = []
-
-  const platforms = packager.normalizePlatforms(["all"]).map((it: Platform) => it.nodeName)
-  if (process.platform === "darwin") {
-    platforms.push("mas")
-  }
-
-  for (let platform of platforms) {
-    for (let arch of (platform === "mas" || platform === "darwin" ? ["x64"] : ["ia32", "x64"])) {
-      downloadPromises.push(downloadElectron({
-        version: ELECTRON_VERSION,
-        arch: arch,
-        platform: platform,
-      }))
-    }
-  }
-  return BluebirdPromise.all(downloadPromises)
-}
-
-// npm is very slow and not reliable - so, just copy and then prune dev dependencies
-async function copyDependencies() {
-  await emptyDir(testNodeModules)
-  const devDeps = Object.keys((await readJson(path.join(rootDir, "package.json"), "utf-8")).devDependencies)
-  const filtered = new Set()
-  /*eslint prefer-const: 0*/
-  for (let name of devDeps) {
-    filtered.add(path.join(rootDir, "node_modules", name))
-  }
-
-  filtered.add(path.join(rootDir, "node_modules", ".bin"))
-
-  return copy(path.join(rootDir, "node_modules"), testNodeModules, {
-    filter: it => {
-      if (it.includes("node_modules" + path.sep + "babel-")) {
-        return false
-      }
-      return !filtered.has(it)
-    }
-  })
-}
-
-/**
- * CIRCLE_NODE_INDEX=2 — test nodejs 4 (on Circle).
- */
-function runTests(): BluebirdPromise<any> {
-  const args: Array<string> = []
-  const testFiles = process.env.TEST_FILES
-
-  args.push(`--concurrency=${cpus().length}`)
-
-  const baseDir = path.join("test", "out")
-  const baseForLinuxTests = [path.join(baseDir, "ArtifactPublisherTest.js"), path.join(baseDir, "httpRequestTest.js"), path.join(baseDir, "RepoSlugTest.js")]
-  let skipWin = false
+  const args = []
   if (!isEmptyOrSpaces(testFiles)) {
-    args.push(...testFiles.split(",").map((it: string) => path.join(baseDir, it.trim() + ".js")))
-    if (process.platform === "linux") {
-      // test it only on Linux in any case
-      args.push(...baseForLinuxTests)
-    }
-
-    console.log(`Test files: ${args.join(", ")}`)
+    args.push(...testFiles!!.split(",").map(it => `${it.trim()}.js`))
   }
   else if (!isEmptyOrSpaces(process.env.CIRCLE_NODE_INDEX)) {
-    const circleNodeIndex = parseInt(process.env.CIRCLE_NODE_INDEX, 10)
-    if (circleNodeIndex === 0 || circleNodeIndex === 2) {
-      skipWin = true
-      args.push(path.join(baseDir, "linuxPackagerTest.js"), path.join(baseDir, "BuildTest.js"), path.join(baseDir, "globTest.js"))
+    const circleNodeIndex = parseInt(process.env.CIRCLE_NODE_INDEX!!, 10)
+    if (circleNodeIndex === 0) {
+      args.push("debTest")
+      args.push("fpmTest")
+      args.push("winPackagerTest")
+      args.push("winCodeSignTest")
+      args.push("squirrelWindowsTest")
+      args.push("nsisUpdaterTest")
+      args.push("macArchiveTest")
+      args.push("macCodeSignTest")
+      args.push("extraMetadataTest")
+    }
+    else if (circleNodeIndex === 1) {
+      args.push("oneClickInstallerTest")
+    }
+    else if (circleNodeIndex === 2) {
+      args.push("snapTest")
+      args.push("configurationValidationTest")
+      args.push("mainEntryTest")
+      args.push("PublishManagerTest", "ArtifactPublisherTest", "httpRequestTest", "RepoSlugTest")
+      args.push("macPackagerTest")
+      args.push("portableTest")
+      args.push("linuxPackagerTest")
+      args.push("ignoreTest")
+      args.push("HoistedNodeModuleTest")
     }
     else {
-      args.push(path.join(baseDir, "winPackagerTest.js"), path.join(baseDir, "nsisTest.js"), path.join(baseDir, "macPackagerTest.js"))
-      args.push(...baseForLinuxTests)
+      args.push("BuildTest")
+      args.push("assistedInstallerTest")
+      args.push("linuxArchiveTest")
+      args.push("filesTest")
+      args.push("globTest")
+      args.push("webInstallerTest")
+      args.push("msiTest")
     }
     console.log(`Test files for node ${circleNodeIndex}: ${args.join(", ")}`)
   }
-  else if (process.platform === "win32") {
-    args.push("test/out/*.js", "!test/out/macPackagerTest.js", "!test/out/linuxPackagerTest.js", "!test/out/CodeSignTest.js", "!test/out/ArtifactPublisherTest.js", "!test/out/httpRequestTest.js")
-  }
-  else if (!util.isCi()) {
-    args.push("test/out/*.js", "!test/out/ArtifactPublisherTest.js", "!test/out/httpRequestTest.js")
-  }
 
-  return utilSpawn(path.join(rootDir, "node_modules", ".bin", "ava"), args, {
-    cwd: rootDir,
-    env: Object.assign({}, process.env, {
-      NODE_PATH: path.join(testNodeModules, "electron-builder"),
-      SKIP_WIN: skipWin,
-      CSC_IDENTITY_AUTO_DISCOVERY: "false",
-    }),
-    shell: process.platform === "win32",
-    stdio: "inherit"
-  })
-}
+  process.env.TEST_TMP_DIR = TEST_TMP_DIR
 
-function exec(args: Array<string>) {
-  return new BluebirdPromise((resolve, reject) => {
-    let command = "npm"
-    const npmExecPath = process.env.npm_execpath || process.env.NPM_CLI_JS
-    if (npmExecPath != null) {
-      args.unshift(npmExecPath)
-      command = process.env.npm_node_execpath || process.env.NODE_EXE || "node"
-    }
+  const rootDir = path.join(__dirname, "..", "..", "..")
 
-    const effectiveOptions = {
-      stdio: ["ignore", "ignore", "inherit"],
-      cwd: testPackageDir,
-    }
-    // console.log(`Execute ${command} ${args.join(" ")} (cwd: ${effectiveOptions.cwd})`)
-    const child = spawn(command, args, effectiveOptions)
-    child.on("close", (code: number) => {
-      if (code === 0) {
-        resolve()
+  const config = (await readJson(path.join(rootDir, "package.json"))).jest
+  // use custom cache dir to avoid https://github.com/facebook/jest/issues/1903#issuecomment-261212137
+  config.cacheDirectory = process.env.JEST_CACHE_DIR || "/tmp/jest-electron-builder-tests"
+  // no need to transform — compiled before
+  config.transform = {}
+  config.transformIgnorePatterns = [".*"]
+  config.bail = process.env.TEST_BAIL === "true"
+
+  let runInBand = false
+  const scriptArgs = process.argv.slice(2)
+
+  const testPathIgnorePatterns = config.testPathIgnorePatterns
+  if (scriptArgs.length > 0) {
+    for (const scriptArg of scriptArgs) {
+      console.log(`custom opt: ${scriptArg}`)
+      if ("runInBand" === scriptArg) {
+        runInBand = true
+      }
+      else if (scriptArg.includes("=")) {
+        const equalIndex = scriptArg.indexOf("=")
+        const envName = scriptArg.substring(0, equalIndex)
+        let envValue = scriptArg.substring(equalIndex + 1)
+        if (envValue === "isCi") {
+          envValue = isCi ? "true" : "false"
+        }
+
+        process.env[envName] = envValue
+        console.log(`Custom env ${envName}=${envValue}`)
+
+        if (envName === "ALL_TESTS" && envValue === "false") {
+          config.cacheDirectory += "-basic"
+        }
+      }
+      else if (scriptArg.startsWith("skip")) {
+        if (!isCi) {
+          const suffix = scriptArg.substring("skip".length)
+          switch (scriptArg) {
+            case "skipArtifactPublisher": {
+              testPathIgnorePatterns.push("[\\/]{1}ArtifactPublisherTest.js$")
+              config.cacheDirectory += `-${suffix}`
+            }
+              // noinspection TsLint
+              break
+
+            default:
+              throw new Error(`Unknown opt ${scriptArg}`)
+          }
+        }
       }
       else {
-        try {
-          console.error(readFileSync(path.join(testPackageDir, "npm-debug.log"), "utf8"))
-        }
-        catch (e) {
-          // ignore
-        }
-        reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`))
+        config[scriptArg] = true
       }
-    })
-    child.on("error", (error: Error) => {
-      reject(new Error(`Failed to start child process: ${command} ${args.join(" ")}` + (error.stack || error)))
-    })
-  })
+    }
+  }
+
+  const jestArgs: any = {
+    verbose: true,
+    updateSnapshot: process.env.UPDATE_SNAPSHOT === "true",
+    config,
+    runInBand,
+  }
+  if (args.length > 0) {
+    jestArgs.testPathPattern = args.join("|")
+  }
+  if (process.env.CIRCLECI != null || process.env.TEST_JUNIT_REPORT === "true") {
+    jestArgs.testResultsProcessor = "jest-junit"
+  }
+
+  const testResult = await require("jest-cli").runCLI(jestArgs, [rootDir])
+  const exitCode = testResult.results == null || testResult.results.success ? 0 : testResult.globalConfig.testFailureExitCode
+  if (isCi) {
+    process.exit(exitCode)
+  }
+
+  await remove(TEST_TMP_DIR)
+  process.exitCode = exitCode
+  if (testResult.globalConfig.forceExit) {
+    process.exit(exitCode)
+  }
 }

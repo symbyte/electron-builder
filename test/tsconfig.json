@@ -1,31 +1,17 @@
 {
+  "extends": "../node_modules/ts-babel/tsconfig-base.json",
   "compilerOptions": {
-    "module": "commonjs",
-    "target": "es6",
-    "noImplicitAny": true,
-    "removeComments": true,
     "outDir": "out",
-    "newLine": "LF",
-    "noResolve": true,
-    "noEmitOnError": true,
-    "inlineSources": true,
-    "sourceMap": true,
-    "noImplicitReturns": true,
-    "noEmitHelpers": true,
-    "noFallthroughCasesInSwitch": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "baseUrl": "../packages"
   },
+  "declaration": false,
   "include": [
-    "../typings/**/*.d.ts",
-    "typings/**/*.d.ts",
-    "src/**/*.ts",
-    "../node_modules/ava-tf/types/generated.d.ts",
-    "../node_modules/fs-extra-p/index.d.ts",
-    "../node_modules/fs-extra-p/bluebird.d.ts",
-    "../node_modules/electron-osx-sign-tf/index.d.ts",
-    "../node_modules/@types/**/*.d.ts"
+    "../typings/*.d.ts",
+    "typings/*.d.ts",
+    "src/**/*.ts"
   ],
   "exclude": [
-    "../node_modules/@types/node/node-*.d.ts"
+    "../typings/electron.d.ts"
   ]
 }

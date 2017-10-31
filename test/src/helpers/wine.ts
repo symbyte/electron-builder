@@ -1,13 +1,10 @@
-import { exec } from "out/util/util"
+import BluebirdPromise from "bluebird-lst"
+import { exec, safeStringifyJson } from "builder-util"
+import { unlinkIfExists } from "builder-util/out/fs"
+import { emptyDir, ensureDir, readFile, writeFile } from "fs-extra-p"
 import { homedir } from "os"
-import { emptyDir, readFile, writeFile, ensureDir } from "fs-extra-p"
 import * as path from "path"
-import { Promise as BluebirdPromise } from "bluebird"
-import pathSorter = require("path-sort")
-import { unlinkIfExists } from "out/util/util"
-
-//noinspection JSUnusedLocalSymbols
-const __awaiter = require("out/util/awaiter")
+import pathSorter from "path-sort"
 
 export class WineManager {
   wineDir: string
@@ -27,7 +24,7 @@ export class WineManager {
     const env = process.env
     const user = env.SUDO_USER || env.LOGNAME || env.USER || env.LNAME || env.USERNAME || (env.HOME === "/root" ? "root" : null)
     if (user == null) {
-      throw new Error(`Cannot determinate user name: ${JSON.stringify(env, null, 2)}`)
+      throw new Error(`Cannot determinate user name: ${safeStringifyJson(env)}`)
     }
 
     this.userDir = path.join(this.wineDir, "drive_c", "users", user)
@@ -85,11 +82,11 @@ export function diff(oldList: Array<string>, newList: Array<string>, rootDir: st
   }
   const deltaMap = new Map<string, ChangeType>()
   // const objHolder = new Set(oldList)
-  for (let item of oldList) {
+  for (const item of oldList) {
     deltaMap.set(item, ChangeType.REMOVED)
   }
 
-  for (let item of newList) {
+  for (const item of newList) {
     // objHolder.add(item)
     const d = deltaMap.get(item)
     if (d === ChangeType.REMOVED) {
@@ -100,7 +97,7 @@ export function diff(oldList: Array<string>, newList: Array<string>, rootDir: st
     }
   }
 
-  for (let [item, changeType] of deltaMap.entries()) {
+  for (const [item, changeType] of deltaMap.entries()) {
     if (changeType === ChangeType.REMOVED) {
       delta.deleted.push(item.substring(rootDir.length + 1))
     }

@@ -1,16 +1,13 @@
-FROM electronuserland/electron-builder:latest
+FROM electronuserland/builder:latest
 
-# libgnome-keyring-dev — to build keytar
-RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys F9CB8DB0 && \
-echo "deb http://ppa.launchpad.net/ubuntu-wine/ppa/ubuntu xenial main " | tee /etc/apt/sources.list.d/wine.list && \
-dpkg --add-architecture i386 && \
-apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 3FA7E0328081BFF6A14DA29AA6A19B38D3D831EF && \
-echo "deb http://download.mono-project.com/repo/debian wheezy main" | tee /etc/apt/sources.list.d/mono-xamarin.list && \
-apt-get update -y && \
-apt-get install -y --no-install-recommends wine1.8 mono-devel ca-certificates-mono && \
-apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common && dpkg --add-architecture i386 && curl -L https://dl.winehq.org/wine-builds/Release.key > Release.key && apt-key add Release.key && apt-add-repository https://dl.winehq.org/wine-builds/ubuntu && \
+  apt-get update && \
+  apt-get -y remove software-properties-common libdbus-glib-1-2 python3-dbus python3-gi python3-pycurl python3-software-properties && \
+  apt-get install -y --no-install-recommends winehq-stable && \
+  # clean
+  apt-get clean && rm -rf /var/lib/apt/lists/* && unlink Release.key
+
+RUN curl -L https://github.com/electron-userland/electron-builder-binaries/releases/download/wine-2.0.3-mac-10.13/wine-home.7z > /tmp/wine-home.7z && 7za x -o/root/.wine /tmp/wine-home.7z && unlink /tmp/wine-home.7z
 
 ENV WINEDEBUG -all,err+all
 ENV WINEDLLOVERRIDES winemenubuilder.exe=d
-
-RUN wineboot --init || true
